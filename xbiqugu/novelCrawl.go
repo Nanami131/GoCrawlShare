@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -201,7 +202,7 @@ func crawlNovel(url string) error {
 	return nil
 }
 
-// GoGetNovel 提供给用户的接口，控制爬小说的流程
+// GoGetNovel 提供给用户的对外接口，控制爬小说的全部流程
 func GoGetNovel() {
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -257,8 +258,47 @@ func GoGetNovel() {
 			continue
 		}
 
+		novelDir, err := createNovelDir(selectedNovel.Title)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+
+		print(novelDir)
 		fmt.Printf("正在处理小说: %s, URL: %s\n", selectedNovel.Title, selectedNovel.URL)
 		crawlNovelChapters(selectedNovel.URL)
 		fmt.Println("---------------------------------")
+		//TODO
+
 	}
+
+}
+
+/*
+createNovelDir 创建小说存储目录，这里如果已经有同名小说不好处理，感觉直接覆盖也不合理，再交互有些冗余。
+经过考量决定如果已经存在同名小说，则不进行下一步操作。
+*/
+func createNovelDir(novelTitle string) (string, error) {
+	baseDir := "Novel"
+	novelDir := filepath.Join(baseDir, novelTitle)
+
+	// 创建或者进入第一层目录
+	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
+		err = os.Mkdir(baseDir, 0755)
+		if err != nil {
+			return "", fmt.Errorf("创建Novel目录失败: %v", err)
+		}
+	}
+
+	// 检查第二层目录是否存在
+	if _, err := os.Stat(novelDir); !os.IsNotExist(err) {
+		return "", fmt.Errorf("小说文件夹已存在，请删除'%s'后再试", novelDir)
+	}
+	// 创建第二层目录
+	err := os.Mkdir(novelDir, 0755)
+	if err != nil {
+		return "", fmt.Errorf("创建小说目录失败: %v", err)
+	}
+
+	return novelDir, nil
 }
