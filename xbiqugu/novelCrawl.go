@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,6 +31,7 @@ type Chapter struct {
 }
 
 /*
+searchNovels 搜索小说
 这里本来想爬的网址是 笔趣阁而不是新笔趣阁
 依次尝试了如下几个url
 https://www.biquai.cc/
@@ -197,8 +199,113 @@ func crawlNovelChapters(url string) ([]Chapter, error) {
 	return chapters, nil
 }
 
-func crawlNovel(url string) error {
+// 单线程爬虫
+func crawlNovel(url, novelDir string) error {
+	// 获取章节列表
+	chapters, err := crawlNovelChapters(url)
+	if err != nil {
+		return fmt.Errorf("获取章节列表失败: %v", err)
+	}
 
+	// 单线程调用FetchChapterContent
+	for _, chapter := range chapters {
+		err := FetchChapterContent(chapter.URL, novelDir, chapter.Title)
+		if err != nil {
+			fmt.Printf("爬取章节'%s'失败: %v\n", chapter.Title, err)
+			continue // 跳过失败的章节，继续处理下一个
+		}
+	}
+
+	return nil
+}
+
+/*
+createNovelDir 创建小说存储目录，这里如果已经有同名小说不好处理，感觉直接覆盖也不合理，再交互有些冗余。
+经过考量决定如果已经存在同名小说，则不进行下一步操作。
+*/
+func createNovelDir(novelTitle string) (string, error) {
+	baseDir := "Novel"
+	novelDir := filepath.Join(baseDir, novelTitle)
+
+	// 创建或者进入第一层目录
+	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
+		err = os.Mkdir(baseDir, 0755)
+		if err != nil {
+			return "", fmt.Errorf("创建Novel目录失败: %v", err)
+		}
+	}
+
+	// 检查第二层目录是否存在
+	if _, err := os.Stat(novelDir); !os.IsNotExist(err) {
+		return "", fmt.Errorf("小说文件夹已存在，请删除'%s'后再试", novelDir)
+	}
+	// 创建第二层目录
+	err := os.Mkdir(novelDir, 0755)
+	if err != nil {
+		return "", fmt.Errorf("创建小说目录失败: %v", err)
+	}
+
+	return novelDir, nil
+}
+
+// FetchChapterContent 爬取单个章节的方法 每章保存一个文件
+func FetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", chapterURL, nil)
+	if err != nil {
+		return fmt.Errorf("创建请求失败: %v", err)
+	}
+
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Cookie", "_abcde_qweasd=0; _abcde_qweasd=0")
+	req.Header.Set("Host", "www.xbiqugu.la")
+	req.Header.Set("Pragma", "no-cache")
+	req.Header.Set("Referer", filepath.Dir(chapterURL)+"/") // 动态设置Referer
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("发送请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("状态码异常: %d", resp.StatusCode)
+	}
+
+	var reader io.Reader = resp.Body
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return fmt.Errorf("解压gzip失败: %v", err)
+		}
+		defer gz.Close()
+		reader = gz
+	}
+
+	doc, err := goquery.NewDocumentFromReader(reader)
+	if err != nil {
+		return fmt.Errorf("解析HTML失败: %v", err)
+	}
+
+	contentSelector := "#content"
+	content := doc.Find(contentSelector).Text()
+	if content == "" {
+		return fmt.Errorf("未找到正文内容")
+	}
+
+	filePath := filepath.Join(novelDir, chapterTitle+".txt")
+	err = ioutil.WriteFile(filePath, []byte(content), 0644)
+	if err != nil {
+		return fmt.Errorf("保存章节内容失败: %v", err)
+	}
+
+	fmt.Printf("已保存章节: %s\n", filePath)
 	return nil
 }
 
@@ -232,7 +339,7 @@ func GoGetNovel() {
 			fmt.Printf("%d: 标题: %s, 链接: %s\n", novel.Index, novel.Title, novel.URL)
 		}
 
-		// 用户选择序号
+		// 选择序号
 		fmt.Print("\n请输入要选择的小说序号（输入 0 取消）: ")
 		scanner.Scan()
 		input := scanner.Text()
@@ -264,41 +371,14 @@ func GoGetNovel() {
 			continue
 		}
 
-		print(novelDir)
 		fmt.Printf("正在处理小说: %s, URL: %s\n", selectedNovel.Title, selectedNovel.URL)
-		crawlNovelChapters(selectedNovel.URL)
-		fmt.Println("---------------------------------")
-		//TODO
 
-	}
-
-}
-
-/*
-createNovelDir 创建小说存储目录，这里如果已经有同名小说不好处理，感觉直接覆盖也不合理，再交互有些冗余。
-经过考量决定如果已经存在同名小说，则不进行下一步操作。
-*/
-func createNovelDir(novelTitle string) (string, error) {
-	baseDir := "Novel"
-	novelDir := filepath.Join(baseDir, novelTitle)
-
-	// 创建或者进入第一层目录
-	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
-		err = os.Mkdir(baseDir, 0755)
+		err = crawlNovel(selectedNovel.URL, novelDir)
 		if err != nil {
-			return "", fmt.Errorf("创建Novel目录失败: %v", err)
+			fmt.Printf("爬取小说失败: %v\n", err)
+			continue
 		}
+		fmt.Println("---------------------------------")
 	}
 
-	// 检查第二层目录是否存在
-	if _, err := os.Stat(novelDir); !os.IsNotExist(err) {
-		return "", fmt.Errorf("小说文件夹已存在，请删除'%s'后再试", novelDir)
-	}
-	// 创建第二层目录
-	err := os.Mkdir(novelDir, 0755)
-	if err != nil {
-		return "", fmt.Errorf("创建小说目录失败: %v", err)
-	}
-
-	return novelDir, nil
 }
