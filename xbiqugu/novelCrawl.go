@@ -365,6 +365,7 @@ func fetchChapterContent(novelDir string, c Chapter) error {
 		return fmt.Errorf("保存章节内容失败: %v", err)
 	}
 	fmt.Printf("已保存章节: %s\n", filePath)
+	//没有测试请求过多会不会封ip
 	time.Sleep(time.Second / 8)
 	return nil
 }
@@ -438,6 +439,7 @@ func GoGetNovel() {
 			fmt.Printf("爬取小说失败: %v\n", err)
 			continue
 		}
+		fmt.Println("爬取完成，请在当前路径/Novel/小说名 目录下选择按照文件名称排序")
 		fmt.Println("---------------------------------")
 	}
 
