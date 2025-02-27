@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -206,33 +209,63 @@ func crawlNovelChapters(url string) ([]Chapter, error) {
 	return chapters, nil
 }
 
-// crawlNovel 单线程爬虫
+// crawlNovel 实现对选定小说的爬虫，同时根据小说规模决定线程数
 func crawlNovel(url, novelDir string) error {
 	chapters, err := crawlNovelChapters(url)
 	if err != nil {
 		return fmt.Errorf("获取章节列表失败: %v", err)
 	}
-	var downloadStatuses []DownloadStatus
+	numChapters := len(chapters)
+	numWorkers := calculateWorkers(numChapters)
+	var statuses []DownloadStatus
 	successCount := 0
 
-	//维护信号量，确定章节下载的成功/失败情况（单线程不需要确定顺序）
-	for _, chapter := range chapters {
-		err := FetchChapterContent(chapter.URL, novelDir, chapter.Title)
-		status := DownloadStatus{
-			Seq:     chapter.Index,
-			Title:   chapter.Title,
-			Success: err == nil,
+	if numWorkers == 1 {
+		for _, chapter := range chapters {
+			err := fetchChapterContent(chapter.URL, novelDir, chapter.Title)
+			status := DownloadStatus{
+				Seq:     chapter.Index,
+				Title:   chapter.Title,
+				Success: err == nil,
+			}
+			statuses = append(statuses, status)
+			if err != nil {
+				fmt.Printf("爬取章节'%s'失败: %v\n", chapter.Title, err)
+			} else {
+				successCount++
+			}
 		}
-		downloadStatuses = append(downloadStatuses, status)
-		if err != nil {
-			fmt.Printf("爬取章节'%s'失败: %v\n", chapter.Title, err)
-		} else {
-			successCount++
+	} else {
+		taskChan := make(chan Chapter, numChapters)
+		resultChan := make(chan DownloadStatus, numChapters)
+		var wg sync.WaitGroup
+
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go worker(taskChan, resultChan, novelDir, &wg)
 		}
+
+		go func() {
+			for _, chapter := range chapters {
+				taskChan <- chapter
+			}
+			close(taskChan)
+		}()
+
+		for i := 0; i < numChapters; i++ {
+			status := <-resultChan
+			statuses = append(statuses, status)
+			if status.Success {
+				successCount++
+			}
+		}
+
+		wg.Wait()
+		close(resultChan)
 	}
 
-	fmt.Printf("下载完成：成功 %d 章，失败 %d 章\n", successCount, len(chapters)-successCount)
-	for _, status := range downloadStatuses {
+	fmt.Printf("下载完成：成功 %d 章，失败 %d 章\n", successCount, numChapters-successCount)
+	for _, status := range statuses {
 		if !status.Success {
 			fmt.Printf("失败章节: %d - %s\n", status.Seq, status.Title)
 		}
@@ -269,8 +302,8 @@ func createNovelDir(novelTitle string) (string, error) {
 	return novelDir, nil
 }
 
-// FetchChapterContent 爬取单个章节的方法 每章保存一个文件
-func FetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
+// fetchChapterContent 爬取单个章节的方法 每章保存一个文件
+func fetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", chapterURL, nil)
 	if err != nil {
@@ -332,10 +365,11 @@ func FetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
 		return fmt.Errorf("保存章节内容失败: %v", err)
 	}
 	fmt.Printf("已保存章节: %s\n", filePath)
+	time.Sleep(time.Second / 8) // 每秒8次请求，每个请求间隔约125ms
 	return nil
 }
 
-// GoGetNovel 提供给用户的对外接口，控制爬小说的全部流程
+// GoGetNovel 提供给用户的对外接口，控制爬取小说的全部流程
 func GoGetNovel() {
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -407,4 +441,25 @@ func GoGetNovel() {
 		fmt.Println("---------------------------------")
 	}
 
+}
+
+// calculateWorkers 根据章节数量分配线程数量，最多指定了10个线程。这个分配算法是随便定的，没有太严谨的考量
+func calculateWorkers(numChapters int) int {
+	if numChapters <= 100 {
+		return 1
+	}
+	workers := int(math.Ceil(float64(numChapters-100)/100)) + 1
+	if workers > 10 {
+		return 10
+	}
+	return workers
+}
+
+// worker 多线程爬取小说章节
+func worker(taskChan chan Chapter, resultChan chan DownloadStatus, novelDir string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for chapter := range taskChan {
+		err := fetchChapterContent(chapter.URL, novelDir, chapter.Title)
+		resultChan <- DownloadStatus{Seq: chapter.Index, Title: chapter.Title, Success: err == nil}
+	}
 }
