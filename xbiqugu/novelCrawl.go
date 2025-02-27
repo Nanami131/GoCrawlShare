@@ -28,9 +28,9 @@ type Novel struct {
 
 // Chapter 章节基本信息
 type Chapter struct {
-	Index int    // 章节序号
-	Title string // 章节名称
-	URL   string // 章节链接
+	Index int
+	Title string
+	URL   string
 }
 
 // DownloadStatus 确认爬到的章节顺序以及状态的信号量
@@ -222,7 +222,7 @@ func crawlNovel(url, novelDir string) error {
 
 	if numWorkers == 1 {
 		for _, chapter := range chapters {
-			err := fetchChapterContent(chapter.URL, novelDir, chapter.Title)
+			err := fetchChapterContent(novelDir, chapter)
 			status := DownloadStatus{
 				Seq:     chapter.Index,
 				Title:   chapter.Title,
@@ -303,9 +303,9 @@ func createNovelDir(novelTitle string) (string, error) {
 }
 
 // fetchChapterContent 爬取单个章节的方法 每章保存一个文件
-func fetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
+func fetchChapterContent(novelDir string, c Chapter) error {
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", chapterURL, nil)
+	req, err := http.NewRequest("GET", c.URL, nil)
 	if err != nil {
 		return fmt.Errorf("创建请求失败: %v", err)
 	}
@@ -317,7 +317,7 @@ func fetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
 	req.Header.Set("Cookie", "_abcde_qweasd=0; _abcde_qweasd=0")
 	req.Header.Set("Host", "www.xbiqugu.la")
 	req.Header.Set("Pragma", "no-cache")
-	req.Header.Set("Referer", filepath.Dir(chapterURL)+"/")
+	req.Header.Set("Referer", filepath.Dir(c.URL)+"/")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0")
 	resp, err := client.Do(req)
@@ -358,14 +358,14 @@ func fetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
 		"<", "_",
 		">", "_",
 		"|", "_",
-	).Replace(chapterTitle)
-	filePath := filepath.Join(novelDir, sanitizedTitle+".txt")
+	).Replace(c.Title)
+	filePath := filepath.Join(novelDir, fmt.Sprintf("%04d-%s.txt", c.Index, sanitizedTitle))
 	err = ioutil.WriteFile(filePath, []byte(content), 0644)
 	if err != nil {
 		return fmt.Errorf("保存章节内容失败: %v", err)
 	}
 	fmt.Printf("已保存章节: %s\n", filePath)
-	time.Sleep(time.Second / 8) // 每秒8次请求，每个请求间隔约125ms
+	time.Sleep(time.Second / 8)
 	return nil
 }
 
@@ -459,7 +459,7 @@ func calculateWorkers(numChapters int) int {
 func worker(taskChan chan Chapter, resultChan chan DownloadStatus, novelDir string, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for chapter := range taskChan {
-		err := fetchChapterContent(chapter.URL, novelDir, chapter.Title)
+		err := fetchChapterContent(novelDir, chapter)
 		resultChan <- DownloadStatus{Seq: chapter.Index, Title: chapter.Title, Success: err == nil}
 	}
 }
