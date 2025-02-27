@@ -255,7 +255,6 @@ func FetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
 	if err != nil {
 		return fmt.Errorf("创建请求失败: %v", err)
 	}
-
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
 	req.Header.Set("Accept-Encoding", "gzip, deflate")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6")
@@ -264,20 +263,17 @@ func FetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
 	req.Header.Set("Cookie", "_abcde_qweasd=0; _abcde_qweasd=0")
 	req.Header.Set("Host", "www.xbiqugu.la")
 	req.Header.Set("Pragma", "no-cache")
-	req.Header.Set("Referer", filepath.Dir(chapterURL)+"/") // 动态设置Referer
+	req.Header.Set("Referer", filepath.Dir(chapterURL)+"/")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0")
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("发送请求失败: %v", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("状态码异常: %d", resp.StatusCode)
 	}
-
 	var reader io.Reader = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(resp.Body)
@@ -287,24 +283,32 @@ func FetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
 		defer gz.Close()
 		reader = gz
 	}
-
 	doc, err := goquery.NewDocumentFromReader(reader)
 	if err != nil {
 		return fmt.Errorf("解析HTML失败: %v", err)
 	}
-
 	contentSelector := "#content"
 	content := doc.Find(contentSelector).Text()
 	if content == "" {
 		return fmt.Errorf("未找到正文内容")
 	}
-
-	filePath := filepath.Join(novelDir, chapterTitle+".txt")
+	// 由于windows存在不允许用在文件命名中的非法字符，在这里做转义处理。
+	sanitizedTitle := strings.NewReplacer(
+		"\\", "_",
+		"/", "_",
+		":", "_",
+		"*", "_",
+		"?", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+	).Replace(chapterTitle)
+	filePath := filepath.Join(novelDir, sanitizedTitle+".txt")
 	err = ioutil.WriteFile(filePath, []byte(content), 0644)
 	if err != nil {
 		return fmt.Errorf("保存章节内容失败: %v", err)
 	}
-
 	fmt.Printf("已保存章节: %s\n", filePath)
 	return nil
 }
