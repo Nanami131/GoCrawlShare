@@ -30,6 +30,13 @@ type Chapter struct {
 	URL   string // 章节链接
 }
 
+// DownloadStatus 确认爬到的章节顺序以及状态的信号量
+type DownloadStatus struct {
+	Seq     int
+	Title   string
+	Success bool
+}
+
 /*
 searchNovels 搜索小说
 这里本来想爬的网址是 笔趣阁而不是新笔趣阁
@@ -199,23 +206,37 @@ func crawlNovelChapters(url string) ([]Chapter, error) {
 	return chapters, nil
 }
 
-// 单线程爬虫
+// crawlNovel 单线程爬虫
 func crawlNovel(url, novelDir string) error {
-	// 获取章节列表
 	chapters, err := crawlNovelChapters(url)
 	if err != nil {
 		return fmt.Errorf("获取章节列表失败: %v", err)
 	}
+	var downloadStatuses []DownloadStatus
+	successCount := 0
 
-	// 单线程调用FetchChapterContent
+	//维护信号量，确定章节下载的成功/失败情况（单线程不需要确定顺序）
 	for _, chapter := range chapters {
 		err := FetchChapterContent(chapter.URL, novelDir, chapter.Title)
+		status := DownloadStatus{
+			Seq:     chapter.Index,
+			Title:   chapter.Title,
+			Success: err == nil,
+		}
+		downloadStatuses = append(downloadStatuses, status)
 		if err != nil {
 			fmt.Printf("爬取章节'%s'失败: %v\n", chapter.Title, err)
-			continue // 跳过失败的章节，继续处理下一个
+		} else {
+			successCount++
 		}
 	}
 
+	fmt.Printf("下载完成：成功 %d 章，失败 %d 章\n", successCount, len(chapters)-successCount)
+	for _, status := range downloadStatuses {
+		if !status.Success {
+			fmt.Printf("失败章节: %d - %s\n", status.Seq, status.Title)
+		}
+	}
 	return nil
 }
 
@@ -293,6 +314,7 @@ func FetchChapterContent(chapterURL, novelDir, chapterTitle string) error {
 		return fmt.Errorf("未找到正文内容")
 	}
 	// 由于windows存在不允许用在文件命名中的非法字符，在这里做转义处理。
+	// 如果要测试部分章节下载失败的情况，可以注释这几行进行测试
 	sanitizedTitle := strings.NewReplacer(
 		"\\", "_",
 		"/", "_",
