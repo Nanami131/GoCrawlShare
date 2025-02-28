@@ -1,7 +1,7 @@
 package xbiqugu
 
 import (
-	"bufio"
+	//"bufio" // 已注释，未使用
 	"bytes"
 	"compress/gzip"
 	"fmt"
@@ -15,6 +15,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -40,6 +45,112 @@ type DownloadStatus struct {
 	Success bool
 }
 
+// StartGUI 图形化交互接口
+func StartGUI() {
+	a := app.New()
+	w := a.NewWindow("小说爬虫")
+	w.Resize(fyne.NewSize(800, 600))
+
+	input := widget.NewEntry()
+	input.SetPlaceHolder("请输入小说名")
+
+	// 搜索结果部分
+	resultList := widget.NewList(
+		func() int { return 0 },
+		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func(id widget.ListItemID, obj fyne.CanvasObject) {},
+	)
+	resultScroll := container.NewVScroll(resultList)
+	resultScroll.SetMinSize(fyne.NewSize(0, 200)) //
+
+	var statusItems []string
+	statusList := widget.NewList(
+		func() int {
+			return len(statusItems)
+		},
+		func() fyne.CanvasObject {
+			return widget.NewLabel("")
+		},
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			obj.(*widget.Label).SetText(statusItems[id])
+		},
+	)
+	statusScroll := container.NewVScroll(statusList)
+	statusScroll.SetMinSize(fyne.NewSize(0, 200))
+
+	updateStatus := func(text string) {
+		statusItems = append(statusItems, text)
+		statusList.Refresh()
+		statusScroll.ScrollToBottom()
+	}
+
+	searchBtn := widget.NewButton("搜索", func() {
+		novels, err := searchNovels(input.Text)
+		if err != nil {
+			updateStatus(fmt.Sprintf("错误: %v", err))
+			return
+		}
+		if len(novels) == 0 {
+			updateStatus("搜索结果: 未找到任何匹配的小说")
+			return
+		}
+		updateStatus("\n搜索结果:")
+		resultList.Length = func() int { return len(novels) }
+		resultList.CreateItem = func() fyne.CanvasObject { return widget.NewLabel("") }
+		resultList.UpdateItem = func(id widget.ListItemID, obj fyne.CanvasObject) {
+			obj.(*widget.Label).SetText(fmt.Sprintf("%d: 标题: %s, 链接: %s", novels[id].Index, novels[id].Title, novels[id].URL))
+		}
+		resultList.Refresh()
+		updateStatus("请从列表中选择小说")
+	})
+
+	var selectedNovel Novel
+	crawlBtn := widget.NewButton("爬取", func() {
+		if selectedNovel.URL == "" {
+			updateStatus("请先选择一本小说")
+			return
+		}
+		go func() {
+			novelDir, err := createNovelDir(selectedNovel.Title)
+			if err != nil {
+				updateStatus(err.Error())
+				return
+			}
+			updateStatus(fmt.Sprintf("正在处理小说: %s, URL: %s", selectedNovel.Title, selectedNovel.URL))
+			statuses, err := crawlNovel(selectedNovel.URL, novelDir, updateStatus)
+			if err != nil {
+				updateStatus(fmt.Sprintf("爬取小说失败: %v", err))
+				return
+			}
+			successCount := 0
+			failureText := ""
+			for _, s := range statuses {
+				if s.Success {
+					successCount++
+				} else {
+					failureText += fmt.Sprintf("失败章节: %d - %s\n", s.Seq, s.Title)
+				}
+			}
+			updateStatus(fmt.Sprintf("下载完成：成功 %d 章，失败 %d 章\n%s", successCount, len(statuses)-successCount, failureText))
+			updateStatus("爬取完成，请在当前路径/Novel/小说名 目录下选择按照文件名称排序")
+		}()
+	})
+
+	exitBtn := widget.NewButton("退出", func() {
+		a.Quit()
+	})
+
+	resultList.OnSelected = func(id widget.ListItemID) {
+		novels, _ := searchNovels(input.Text)
+		selectedNovel = novels[id]
+		updateStatus(fmt.Sprintf("已选择: %s (%s)", selectedNovel.Title, selectedNovel.URL))
+	}
+
+	content := container.NewVBox(input, searchBtn, crawlBtn, exitBtn, resultScroll, statusScroll)
+	w.SetContent(content)
+	w.ShowAndRun()
+}
+
 /*
 searchNovels 搜索小说
 这里本来想爬的网址是 笔趣阁而不是新笔趣阁
@@ -49,7 +160,6 @@ https://www.bi01.cc/
 但是在爬取小说的搜索界面时就发生了障碍，详见ReadMe文档
 */
 func searchNovels(searchTerm string) ([]Novel, error) {
-
 	targetURL := "http://www.xbiqugu.la/modules/article/waps.php"
 
 	// 这个网站是通过post修改网页内容，并不是get方式通过query参数查询
@@ -137,7 +247,6 @@ func searchNovels(searchTerm string) ([]Novel, error) {
 
 // crawlNovelChapters 从小说目录页提取章节名称和URL
 func crawlNovelChapters(url string) ([]Chapter, error) {
-
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -210,10 +319,10 @@ func crawlNovelChapters(url string) ([]Chapter, error) {
 }
 
 // crawlNovel 实现对选定小说的爬虫，同时根据小说规模决定线程数
-func crawlNovel(url, novelDir string) error {
+func crawlNovel(url, novelDir string, updateStatus func(string)) ([]DownloadStatus, error) {
 	chapters, err := crawlNovelChapters(url)
 	if err != nil {
-		return fmt.Errorf("获取章节列表失败: %v", err)
+		return nil, fmt.Errorf("获取章节列表失败: %v", err)
 	}
 	numChapters := len(chapters)
 	numWorkers := calculateWorkers(numChapters)
@@ -222,7 +331,7 @@ func crawlNovel(url, novelDir string) error {
 
 	if numWorkers == 1 {
 		for _, chapter := range chapters {
-			err := fetchChapterContent(novelDir, chapter)
+			err := fetchChapterContent(novelDir, chapter, updateStatus)
 			status := DownloadStatus{
 				Seq:     chapter.Index,
 				Title:   chapter.Title,
@@ -230,7 +339,7 @@ func crawlNovel(url, novelDir string) error {
 			}
 			statuses = append(statuses, status)
 			if err != nil {
-				fmt.Printf("爬取章节'%s'失败: %v\n", chapter.Title, err)
+				updateStatus(fmt.Sprintf("爬取章节'%s'失败: %v", chapter.Title, err))
 			} else {
 				successCount++
 			}
@@ -242,7 +351,7 @@ func crawlNovel(url, novelDir string) error {
 
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go worker(taskChan, resultChan, novelDir, &wg)
+			go worker(taskChan, resultChan, novelDir, &wg, updateStatus)
 		}
 
 		go func() {
@@ -264,13 +373,7 @@ func crawlNovel(url, novelDir string) error {
 		close(resultChan)
 	}
 
-	fmt.Printf("下载完成：成功 %d 章，失败 %d 章\n", successCount, numChapters-successCount)
-	for _, status := range statuses {
-		if !status.Success {
-			fmt.Printf("失败章节: %d - %s\n", status.Seq, status.Title)
-		}
-	}
-	return nil
+	return statuses, nil
 }
 
 /*
@@ -303,7 +406,7 @@ func createNovelDir(novelTitle string) (string, error) {
 }
 
 // fetchChapterContent 爬取单个章节的方法 每章保存一个文件
-func fetchChapterContent(novelDir string, c Chapter) error {
+func fetchChapterContent(novelDir string, c Chapter, updateStatus func(string)) error {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", c.URL, nil)
 	if err != nil {
@@ -364,86 +467,75 @@ func fetchChapterContent(novelDir string, c Chapter) error {
 	if err != nil {
 		return fmt.Errorf("保存章节内容失败: %v", err)
 	}
-	fmt.Printf("已保存章节: %s\n", filePath)
+	updateStatus(fmt.Sprintf("已保存章节: %s", filePath))
 	//没有测试请求过多会不会封ip
 	time.Sleep(time.Second / 8)
 	return nil
 }
 
 // GoGetNovel 提供给用户的对外接口，控制爬取小说的全部流程
-func GoGetNovel() {
-	scanner := bufio.NewScanner(os.Stdin)
-	for {
-		fmt.Print("请输入小说名（输入 'exit' 退出）: ")
-		scanner.Scan()
-		searchTerm := scanner.Text()
-
-		if searchTerm == "exit" {
-			fmt.Println("程序退出")
-			break
-		}
-
-		novels, err := searchNovels(searchTerm)
-		if err != nil {
-			fmt.Println("错误:", err)
-			continue
-		}
-
-		if len(novels) == 0 {
-			fmt.Println("搜索结果: 未找到任何匹配的小说")
-			continue
-		}
-
-		// 显示搜索结果
-		fmt.Println("\n搜索结果:")
-		for _, novel := range novels {
-			fmt.Printf("%d: 标题: %s, 链接: %s\n", novel.Index, novel.Title, novel.URL)
-		}
-
-		// 选择序号
-		fmt.Print("\n请输入要选择的小说序号（输入 0 取消）: ")
-		scanner.Scan()
-		input := scanner.Text()
-		var selectedIndex int
-		_, err = fmt.Sscanf(input, "%d", &selectedIndex)
-		if err != nil || selectedIndex < 0 || selectedIndex > len(novels) {
-			fmt.Println("无效的选择，已取消操作")
-			continue
-		}
-
-		if selectedIndex == 0 {
-			fmt.Println("已取消操作")
-			continue
-		}
-
-		// 确认操作
-		selectedNovel := novels[selectedIndex-1]
-		fmt.Printf("你选择了: %s (%s)，确认吗？(Y/N): ", selectedNovel.Title, selectedNovel.URL)
-		scanner.Scan()
-		confirm := strings.ToUpper(strings.TrimSpace(scanner.Text()))
-		if confirm != "Y" {
-			fmt.Println("已取消操作")
-			continue
-		}
-
-		novelDir, err := createNovelDir(selectedNovel.Title)
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
-
-		fmt.Printf("正在处理小说: %s, URL: %s\n", selectedNovel.Title, selectedNovel.URL)
-
-		err = crawlNovel(selectedNovel.URL, novelDir)
-		if err != nil {
-			fmt.Printf("爬取小说失败: %v\n", err)
-			continue
-		}
-		fmt.Println("爬取完成，请在当前路径/Novel/小说名 目录下选择按照文件名称排序")
-		fmt.Println("---------------------------------")
-	}
-
-}
+//func GoGetNovel() {
+//	scanner := bufio.NewScanner(os.Stdin)
+//	for {
+//		fmt.Print("请输入小说名（输入 'exit' 退出）: ")
+//		scanner.Scan()
+//		searchTerm := scanner.Text()
+//		if searchTerm == "exit" {
+//			fmt.Println("程序退出")
+//			break
+//		}
+//		novels, err := searchNovels(searchTerm)
+//		if err != nil {
+//			fmt.Println("错误:", err)
+//			continue
+//		}
+//		if len(novels) == 0 {
+//			fmt.Println("搜索结果: 未找到任何匹配的小说")
+//			continue
+//		}
+//		// 显示搜索结果
+//		fmt.Println("\n搜索结果:")
+//		for _, novel := range novels {
+//			fmt.Printf("%d: 标题: %s, 链接: %s\n", novel.Index, novel.Title, novel.URL)
+//		}
+//		// 选择序号
+//		fmt.Print("\n请输入要选择的小说序号（输入 0 取消）: ")
+//		scanner.Scan()
+//		input := scanner.Text()
+//		var selectedIndex int
+//		_, err = fmt.Sscanf(input, "%d", &selectedIndex)
+//		if err != nil || selectedIndex < 0 || selectedIndex > len(novels) {
+//			fmt.Println("无效的选择，已取消操作")
+//			continue
+//		}
+//		if selectedIndex == 0 {
+//			fmt.Println("已取消操作")
+//			continue
+//		}
+//		// 确认操作
+//		selectedNovel := novels[selectedIndex-1]
+//		fmt.Printf("你选择了: %s (%s)，确认吗？(Y/N): ", selectedNovel.Title, selectedNovel.URL)
+//		scanner.Scan()
+//		confirm := strings.ToUpper(strings.TrimSpace(scanner.Text()))
+//		if confirm != "Y" {
+//			fmt.Println("已取消操作")
+//			continue
+//		}
+//		novelDir, err := createNovelDir(selectedNovel.Title)
+//		if err != nil {
+//			fmt.Println(err)
+//			continue
+//		}
+//		fmt.Printf("正在处理小说: %s, URL: %s\n", selectedNovel.Title, selectedNovel.URL)
+//		err = crawlNovel(selectedNovel.URL, novelDir)
+//		if err != nil {
+//			fmt.Printf("爬取小说失败: %v\n", err)
+//			continue
+//		}
+//		fmt.Println("爬取完成，请在当前路径/Novel/小说名 目录下选择按照文件名称排序")
+//		fmt.Println("---------------------------------")
+//	}
+//}
 
 // calculateWorkers 根据章节数量分配线程数量，最多指定了10个线程。这个分配算法是随便定的，没有太严谨的考量
 func calculateWorkers(numChapters int) int {
@@ -458,10 +550,10 @@ func calculateWorkers(numChapters int) int {
 }
 
 // worker 多线程爬取小说章节
-func worker(taskChan chan Chapter, resultChan chan DownloadStatus, novelDir string, wg *sync.WaitGroup) {
+func worker(taskChan chan Chapter, resultChan chan DownloadStatus, novelDir string, wg *sync.WaitGroup, updateStatus func(string)) {
 	defer wg.Done()
 	for chapter := range taskChan {
-		err := fetchChapterContent(novelDir, chapter)
+		err := fetchChapterContent(novelDir, chapter, updateStatus)
 		resultChan <- DownloadStatus{Seq: chapter.Index, Title: chapter.Title, Success: err == nil}
 	}
 }
