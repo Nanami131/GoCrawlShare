@@ -1,7 +1,6 @@
 package xbiqugu
 
 import (
-	//"bufio" // 已注释，未使用
 	"bytes"
 	"compress/gzip"
 	"fmt"
@@ -49,38 +48,32 @@ type DownloadStatus struct {
 func StartGUI() {
 	a := app.New()
 	w := a.NewWindow("小说爬虫")
-	w.Resize(fyne.NewSize(800, 600))
+	w.Resize(fyne.NewSize(800, 600)) // 设置初始窗口大小
 
 	input := widget.NewEntry()
 	input.SetPlaceHolder("请输入小说名")
 
-	// 搜索结果部分
 	resultList := widget.NewList(
 		func() int { return 0 },
 		func() fyne.CanvasObject { return widget.NewLabel("") },
 		func(id widget.ListItemID, obj fyne.CanvasObject) {},
 	)
 	resultScroll := container.NewVScroll(resultList)
-	resultScroll.SetMinSize(fyne.NewSize(0, 200)) //
+	resultScroll.SetMinSize(fyne.NewSize(0, 200))
 
-	var statusItems []string
-	statusList := widget.NewList(
-		func() int {
-			return len(statusItems)
-		},
-		func() fyne.CanvasObject {
-			return widget.NewLabel("")
-		},
-		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			obj.(*widget.Label).SetText(statusItems[id])
-		},
-	)
-	statusScroll := container.NewVScroll(statusList)
+	statusLabel := widget.NewLabel("")
+	statusLabel.Wrapping = fyne.TextWrapWord
+	statusScroll := container.NewVScroll(statusLabel)
 	statusScroll.SetMinSize(fyne.NewSize(0, 200))
 
+	// 输出重定向函数
 	updateStatus := func(text string) {
-		statusItems = append(statusItems, text)
-		statusList.Refresh()
+		current := statusLabel.Text
+		if current == "" {
+			statusLabel.SetText(text)
+		} else {
+			statusLabel.SetText(current + "\n" + text)
+		}
 		statusScroll.ScrollToBottom()
 	}
 
@@ -310,10 +303,10 @@ func crawlNovelChapters(url string) ([]Chapter, error) {
 		return nil, fmt.Errorf("未找到任何章节")
 	}
 
-	fmt.Println("提取的章节列表:")
-	for _, ch := range chapters {
-		fmt.Printf("%d: %s - %s\n", ch.Index, ch.Title, ch.URL)
-	}
+	//fmt.Println("提取的章节列表:")
+	//for _, ch := range chapters {
+	//	fmt.Printf("%d: %s - %s\n", ch.Index, ch.Title, ch.URL)
+	//}
 
 	return chapters, nil
 }
